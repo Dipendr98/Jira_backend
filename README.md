@@ -13,9 +13,9 @@ A production-grade backend for a **Jira-like project management tool** built wit
 
 | Service | URL |
 |---|---|
-| **API Base URL** | `https://your-app.railway.app` |
-| **Swagger UI (Interactive Docs)** | `https://your-app.railway.app/docs` |
-| **Health Check** | `https://your-app.railway.app/health` |
+| **API Base URL** | `https://jirabackend-production-81ac.up.railway.app/` |
+| **Swagger UI (Interactive Docs)** | `https://jirabackend-production-81ac.up.railway.app/docs` |
+| **Health Check** | `https://jirabackend-production-81ac.up..railway.app/health` |
 
 ---
 
@@ -82,7 +82,7 @@ A production-grade backend for a **Jira-like project management tool** built wit
 ### Option 1: Docker (Recommended — one command)
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/jira-backend-v2
+git clone https://github.com/Dipendra98/jira-backend-v2
 cd jira-backend-v2
 
 cp .env.example .env
