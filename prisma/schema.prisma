@@ -1,0 +1,338 @@
+// This is your Prisma schema file
+// It defines ALL your database tables and relationships
+
+generator client {
+  provider      = "prisma-client-js"
+  // Target the Debian bookworm (node:20-bookworm-slim) OpenSSL 3.0 binary.
+  // "native" covers local dev. Without this, Prisma falls back to WASM at
+  // runtime which strictly validates DATABASE_URL even for prisma generate.
+  binaryTargets = ["native", "debian-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// USERS
+// ─────────────────────────────────────────────
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  password    String
+  displayName String
+  avatarUrl   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  projectMembers    ProjectMember[]
+  assignedIssues    Issue[]         @relation("AssignedIssues")
+  reportedIssues    Issue[]         @relation("ReportedIssues")
+  comments          Comment[]
+  activityLogs      ActivityLog[]
+  notifications     Notification[]
+  watchedIssues     IssueWatcher[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// PROJECTS
+// ─────────────────────────────────────────────
+model Project {
+  id            String   @id @default(uuid())
+  key           String   @unique  // e.g. "PROJ" → used in issue IDs like PROJ-123
+  name          String
+  description   String?
+  issueSequence Int     @default(0)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  // Relations
+  members            ProjectMember[]
+  issues             Issue[]
+  sprints            Sprint[]
+  workflowStatuses   WorkflowStatus[]
+  customFieldDefs    CustomFieldDefinition[]
+  activityLogs       ActivityLog[]
+
+  @@map("projects")
+}
+
+// Who belongs to which project (many-to-many)
+model ProjectMember {
+  id        String      @id @default(uuid())
+  role      MemberRole  @default(MEMBER)
+  joinedAt  DateTime    @default(now())
+
+  userId    String
+  projectId String
+  user      User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  project   Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, projectId])
+  @@map("project_members")
+}
+
+enum MemberRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+// ─────────────────────────────────────────────
+// WORKFLOW ENGINE
+// ─────────────────────────────────────────────
+// Each project has its own configurable statuses
+model WorkflowStatus {
+  id          String  @id @default(uuid())
+  name        String  // e.g. "In Progress"
+  color       String  @default("#6366f1")
+  position    Int     // order on the board (0, 1, 2...)
+  isDefault   Boolean @default(false) // new issues start here
+  projectId   String
+  project     Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  // Which transitions ARE allowed FROM this status
+  transitionsFrom StatusTransition[] @relation("FromStatus")
+  transitionsTo   StatusTransition[] @relation("ToStatus")
+  issues          Issue[]
+
+  @@unique([projectId, name])
+  @@map("workflow_statuses")
+}
+
+// Defines ALLOWED transitions between statuses
+// e.g. "In Progress" → "In Review" is allowed
+// but "To Do" → "Done" is NOT allowed (no row exists)
+model StatusTransition {
+  id           String @id @default(uuid())
+  fromStatusId String
+  toStatusId   String
+  // Optional: auto-assign reviewer when moving to "In Review"
+  autoAction   String? // JSON string for auto actions
+
+  fromStatus WorkflowStatus @relation("FromStatus", fields: [fromStatusId], references: [id], onDelete: Cascade)
+  toStatus   WorkflowStatus @relation("ToStatus", fields: [toStatusId], references: [id], onDelete: Cascade)
+
+  @@unique([fromStatusId, toStatusId])
+  @@map("status_transitions")
+}
+
+// ─────────────────────────────────────────────
+// SPRINTS
+// ─────────────────────────────────────────────
+model Sprint {
+  id        String       @id @default(uuid())
+  name      String
+  goal      String?
+  status    SprintStatus @default(PLANNED)
+  startDate DateTime?
+  endDate   DateTime?
+  projectId String
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  issues Issue[]
+
+  @@map("sprints")
+}
+
+enum SprintStatus {
+  PLANNED
+  ACTIVE
+  COMPLETED
+}
+
+// ─────────────────────────────────────────────
+// ISSUES (the core entity)
+// ─────────────────────────────────────────────
+model Issue {
+  id           String      @id @default(uuid())
+  issueKey     String      @unique // e.g. "PROJ-123" - auto generated
+  type         IssueType
+  title        String
+  description  String?
+  priority     Priority    @default(MEDIUM)
+  storyPoints  Int?
+  labels       String[]    // array of tag strings
+  version      Int         @default(1)
+
+  // Hierarchy: Epic → Story → Sub-task
+  parentId     String?
+  parent       Issue?      @relation("IssueHierarchy", fields: [parentId], references: [id])
+  children     Issue[]     @relation("IssueHierarchy")
+
+  // Foreign keys
+  projectId    String
+  statusId     String
+  assigneeId   String?
+  reporterId   String
+  sprintId     String?     // null = in backlog
+
+  project      Project        @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  status       WorkflowStatus @relation(fields: [statusId], references: [id])
+  assignee     User?          @relation("AssignedIssues", fields: [assigneeId], references: [id])
+  reporter     User           @relation("ReportedIssues", fields: [reporterId], references: [id])
+  sprint       Sprint?        @relation(fields: [sprintId], references: [id])
+
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  comments         Comment[]
+  activityLogs     ActivityLog[]
+  watchers         IssueWatcher[]
+  customFieldValues CustomFieldValue[]
+  notifications    Notification[]
+
+  // Full-text search index (PostgreSQL)
+  @@index([projectId])
+  @@index([sprintId])
+  @@index([assigneeId])
+  @@index([statusId])
+  @@map("issues")
+}
+
+enum IssueType {
+  EPIC
+  STORY
+  TASK
+  BUG
+  SUBTASK
+}
+
+enum Priority {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+}
+
+// ─────────────────────────────────────────────
+// COMMENTS (threaded)
+// ─────────────────────────────────────────────
+model Comment {
+  id        String   @id @default(uuid())
+  content   String
+  issueId   String
+  authorId  String
+  parentId  String?  // for threaded replies
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  issue   Issue    @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  author  User     @relation(fields: [authorId], references: [id])
+  parent  Comment? @relation("CommentThread", fields: [parentId], references: [id])
+  replies Comment[] @relation("CommentThread")
+
+  @@index([issueId])
+  @@map("comments")
+}
+
+// ─────────────────────────────────────────────
+// ACTIVITY LOG (full audit trail)
+// ─────────────────────────────────────────────
+model ActivityLog {
+  id         String   @id @default(uuid())
+  eventType  String   // e.g. "status_changed", "assignee_changed", "comment_added"
+  oldValue   String?  // what it was before
+  newValue   String?  // what it changed to
+  metadata   String?  // JSON for extra data
+  createdAt  DateTime @default(now())
+
+  issueId   String?
+  projectId String
+  userId    String
+
+  issue   Issue?  @relation(fields: [issueId], references: [id], onDelete: SetNull)
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@index([issueId])
+  @@index([projectId])
+  @@map("activity_logs")
+}
+
+// ─────────────────────────────────────────────
+// NOTIFICATIONS
+// ─────────────────────────────────────────────
+model Notification {
+  id        String           @id @default(uuid())
+  type      NotificationType
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+
+  userId  String
+  issueId String?
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  issue   Issue? @relation(fields: [issueId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@map("notifications")
+}
+
+enum NotificationType {
+  ASSIGNED
+  MENTIONED
+  STATUS_CHANGED
+  ISSUE_UPDATED
+  COMMENT_ADDED
+  SPRINT_STARTED
+  SPRINT_COMPLETED
+}
+
+// ─────────────────────────────────────────────
+// ISSUE WATCHERS
+// ─────────────────────────────────────────────
+model IssueWatcher {
+  issueId String
+  userId  String
+  issue   Issue  @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  user    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([issueId, userId])
+  @@map("issue_watchers")
+}
+
+// ─────────────────────────────────────────────
+// CUSTOM FIELDS (per project)
+// ─────────────────────────────────────────────
+model CustomFieldDefinition {
+  id        String          @id @default(uuid())
+  name      String
+  fieldType CustomFieldType
+  options   String?         // JSON array for dropdown options
+  required  Boolean         @default(false)
+  projectId String
+  project   Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  values CustomFieldValue[]
+
+  @@map("custom_field_definitions")
+}
+
+enum CustomFieldType {
+  TEXT
+  NUMBER
+  DROPDOWN
+  DATE
+}
+
+model CustomFieldValue {
+  id        String @id @default(uuid())
+  value     String
+  issueId   String
+  fieldId   String
+
+  issue Issue                @relation(fields: [issueId], references: [id], onDelete: Cascade)
+  field CustomFieldDefinition @relation(fields: [fieldId], references: [id], onDelete: Cascade)
+
+  @@unique([issueId, fieldId])
+  @@map("custom_field_values")
+}

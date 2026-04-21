@@ -1,0 +1,14 @@
+# Railway deployment config
+# Uses Dockerfile builder so the dummy DATABASE_URL ENV in the Dockerfile
+# lets prisma generate + tsc succeed at build time.
+# The real DATABASE_URL is injected by Railway at runtime via env variables.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+startCommand = "/app/start.sh"
+healthcheckPath = "/health"
+healthcheckTimeout = 300
+restartPolicyType = "on_failure"
